@@ -1,0 +1,23 @@
+# Reemplaza a src/main/resources/application.yml durante las pruebas (no se mezcla con él).
+# Sin Config Server ni Eureka: las pruebas importan el api-gateway.yml REAL del repositorio
+# hermano bank-config (rutas, breakers y timeouts se prueban tal como se despliegan), y cada
+# lb://<servicio> se resuelve con el SimpleDiscoveryClient hacia un WireMock por servicio
+# (GatewayTestSupport). Requiere ../bank-config junto a este proyecto.
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    config:
+      enabled: false
+  config:
+    import: "file:../bank-config/api-gateway.yml"
+
+eureka:
+  client:
+    enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
