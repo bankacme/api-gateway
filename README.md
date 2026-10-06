@@ -40,6 +40,10 @@ junto a este proyecto.
 - [ ] Diagramas de la ficha (§11).
 - [ ] Dockerfile (paso 2.7).
 
+## Diagramas
+
+- Secuencia del circuit breaker (timeout, apertura, media apertura, cierre): `docs/sequence/circuit-breaker.md`.
+
 ## Comandos
 - Compilar, estilo, pruebas y cobertura: `.\mvnw verify`
 - Arrancar (necesita `config-server` y `eureka-server` arriba): `.\mvnw spring-boot:run`
