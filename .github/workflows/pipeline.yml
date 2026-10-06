@@ -1,0 +1,128 @@
+name: pipeline
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+    tags: ['gateway-v*']
+
+permissions:
+  contents: read
+
+env:
+  SERVICE: api-gateway
+  IMAGE: ${{ vars.DOCKERHUB_NAMESPACE }}/bank-api-gateway
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Mismo orden de carpetas que en la máquina: algunas pruebas leen ../bank-config.
+      - name: Checkout del servicio
+        uses: actions/checkout@v4
+        with:
+          path: api-gateway
+
+      - name: Checkout de bank-config
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/bank-config
+          path: bank-config
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: api-gateway/pom.xml
+
+      # verify = Checkstyle (validate) + pruebas + reporte y control de cobertura (jacoco:check).
+      - name: mvn verify
+        working-directory: api-gateway
+        run: mvn -B -ntp verify
+
+      - name: Resumen de cobertura
+        if: ${{ always() }}
+        working-directory: api-gateway
+        run: |
+          csv=target/site/jacoco/jacoco.csv
+          [ -f "$csv" ] || { echo "Sin reporte de Jacoco" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          awk -F, 'NR > 1 { li += $8; lc += $9; bm += $6; bc += $7 }
+            END {
+              printf "### Cobertura de %s\n\n| Métrica | Cubierto | Total | %% |\n|---|---|---|---|\n", svc
+              printf "| Líneas | %d | %d | %.1f %% |\n", lc, li + lc, (li + lc) ? 100 * lc / (li + lc) : 0
+              printf "| Ramas | %d | %d | %.1f %% |\n", bc, bm + bc, (bm + bc) ? 100 * bc / (bm + bc) : 0
+            }' svc="$SERVICE" "$csv" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reporte de Jacoco
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-api-gateway
+          path: api-gateway/target/site/jacoco/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Reportes de pruebas (si fallan)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-api-gateway
+          path: api-gateway/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: verify
+    # Nunca en un PR: la imagen se publica después del merge (los PR tampoco reciben los secretos).
+    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # main         → latest y sha-<commit>
+      # gateway-v2 → v2 (versión fija para el docker-compose de la entrega)
+      - name: Etiquetas de la imagen
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short
+            type=match,pattern=-(v\d+.*)$,group=1
+
+      - name: Construir y publicar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Resumen
+        run: |
+          {
+            echo "### Imagen publicada"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
